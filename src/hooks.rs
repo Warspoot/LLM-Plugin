@@ -21,4 +21,5 @@ pub fn ready_class() -> *mut Il2CppClass {
 
 pub fn install() {
     crate::logging::info("hooks::install: no hooks implemented yet");
+    crate::story::install();
 }

@@ -1,6 +1,7 @@
 mod api;
 mod hooks;
 mod logging;
+mod story;
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
