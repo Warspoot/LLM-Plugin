@@ -3,6 +3,7 @@ mod hooks;
 mod il2cpp;
 mod logging;
 mod story;
+mod llm;
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};

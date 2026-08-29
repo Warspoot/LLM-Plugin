@@ -6,6 +6,7 @@ use crate::api;
 use crate::api::Il2CppClass;
 use crate::api::FieldInfo;
 use crate::il2cpp::{list_len, list_ref_at, read_il2cpp_string};
+use crate::llm;
 
 pub fn install() {
     let class = story_timeline_data_class();
@@ -299,5 +300,29 @@ pub fn process(timeline_data: *mut api::Il2CppObject) {
         let text = unsafe { read_il2cpp_string(text_ptr) };
         let needs_tl = needs_translation(&text);
         crate::logging::info(&format!("story::process: block {i} text = {text:?} (needs_translation={needs_tl})"));
+        if needs_tl {
+            if let Some(translated) = llm::translate(&text) {
+                crate::logging::info(&format!("story::process: block {i} translated = {translated:?}"));
+
+                let Ok(c_text) = CString::new(translated) else {
+                    crate::logging::warn(&format!("story::process: block {i} translation had an embedded null byte, skipping write"));
+                    continue;
+                };
+
+                let new_str = unsafe { (api::il2cpp_string_new())(c_text.as_ptr()) };
+                if new_str.is_null() {
+                    crate::logging::warn(&format!("story::process: block {i} il2cpp_string_new failed"));
+                    continue;
+                }
+
+                unsafe {
+                    (api::il2cpp_set_field_value())(
+                        clip as *mut api::Il2CppObject,
+                        text_field(),
+                        new_str as *const c_void,
+                    );
+                }
+            }
+        }
     }
 }
