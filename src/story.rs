@@ -1,6 +1,8 @@
 use std::ffi::CString;
 use std::ffi::c_void;
 use std::sync::OnceLock;
+use std::sync::Mutex;
+use std::thread;
 
 use crate::api;
 use crate::api::Il2CppClass;
@@ -242,7 +244,7 @@ pub fn read_title(timeline_data: *mut api::Il2CppObject) -> String {
     unsafe { read_il2cpp_string(title_ptr) }
 }
 
-// check if text is translated
+// translation qol
 pub fn needs_translation(text: &str) -> bool {
     text.chars().any(|c| {
         let code = c as u32;
@@ -250,6 +252,57 @@ pub fn needs_translation(text: &str) -> bool {
             || (0x30A0..=0x30FF).contains(&code) // Katakana
             || (0x4E00..=0x9FFF).contains(&code) // Kanji
     })
+}
+
+pub fn wrap_text(text: &str, line_width: usize) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let mut current_line = String::new();
+
+    for word in text.split_whitespace() {
+        if !current_line.is_empty() && current_line.chars().count() + 1 + word.chars().count() > line_width {
+            lines.push(std::mem::take(&mut current_line));
+        }
+        if !current_line.is_empty() {
+            current_line.push(' ');
+        }
+        current_line.push_str(word);
+    }
+    if !current_line.is_empty() {
+        lines.push(current_line);
+    }
+
+    lines.join("\n")
+}
+
+struct PendingWrite {
+    clip: usize,
+    text: String,
+}
+
+static PENDING_WRITES: Mutex<Vec<PendingWrite>> = Mutex::new(Vec::new());
+static MAIN_THREAD: OnceLock<usize> = OnceLock::new();
+
+fn main_thread() -> *mut api::Il2CppThread {
+    let addr = *MAIN_THREAD.get_or_init(|| unsafe { (api::il2cpp_get_main_thread())() as usize });
+    addr as *mut api::Il2CppThread
+}
+
+fn write_translated_text(clip: *mut api::Il2CppObject, text: &str) {
+    let Ok(c_text) = CString::new(text) else { return };
+    let new_str = unsafe { (api::il2cpp_string_new())(c_text.as_ptr()) };
+    if new_str.is_null() {
+        return;
+    }
+    unsafe {
+        (api::il2cpp_set_field_value())(clip, text_field(), new_str as *const c_void);
+    }
+}
+
+unsafe extern "C" fn apply_pending_writes() {
+    let mut pending = PENDING_WRITES.lock().unwrap();
+    for write in pending.drain(..) {
+        write_translated_text(write.clip as *mut api::Il2CppObject, &write.text);
+    }
 }
 
 /// read title and text
@@ -267,6 +320,8 @@ pub fn process(timeline_data: *mut api::Il2CppObject) {
     }
     let count = unsafe { list_len(block_list_ptr) };
     crate::logging::info(&format!("story::process: BlockList has {count} blocks"));
+
+    let mut pending: Vec<(usize, String)> = Vec::new();
 
     for i in 0..count {
         let block = unsafe { list_ref_at(block_list_ptr, i) };
@@ -301,28 +356,38 @@ pub fn process(timeline_data: *mut api::Il2CppObject) {
         let needs_tl = needs_translation(&text);
         crate::logging::info(&format!("story::process: block {i} text = {text:?} (needs_translation={needs_tl})"));
         if needs_tl {
+            pending.push((clip as usize, text));
+        }
+    }
+
+    if pending.is_empty() {
+        return;
+    }
+
+    // attempt to prevent a race condition with the first tranlsated text
+    let (first_clip, first_text) = pending.remove(0);
+    if let Some(translated) = llm::translate(&first_text) {
+        let wrapped = wrap_text(&translated, 21);
+        crate::logging::info(&format!("story::process: first block translated = {wrapped:?}"));
+        write_translated_text(first_clip as *mut api::Il2CppObject, &wrapped);
+    }
+
+    if pending.is_empty() {
+        return;
+    }
+
+    thread::spawn(move || {
+        for (clip_addr, text) in pending {
             if let Some(translated) = llm::translate(&text) {
-                crate::logging::info(&format!("story::process: block {i} translated = {translated:?}"));
+                let wrapped = wrap_text(&translated, 45);
+                crate::logging::info(&format!("story::process: translated = {wrapped:?}"));
 
-                let Ok(c_text) = CString::new(translated) else {
-                    crate::logging::warn(&format!("story::process: block {i} translation had an embedded null byte, skipping write"));
-                    continue;
-                };
-
-                let new_str = unsafe { (api::il2cpp_string_new())(c_text.as_ptr()) };
-                if new_str.is_null() {
-                    crate::logging::warn(&format!("story::process: block {i} il2cpp_string_new failed"));
-                    continue;
-                }
+                PENDING_WRITES.lock().unwrap().push(PendingWrite { clip: clip_addr, text: wrapped });
 
                 unsafe {
-                    (api::il2cpp_set_field_value())(
-                        clip as *mut api::Il2CppObject,
-                        text_field(),
-                        new_str as *const c_void,
-                    );
+                    (api::il2cpp_schedule_on_thread())(main_thread(), apply_pending_writes);
                 }
             }
         }
-    }
+    });
 }
