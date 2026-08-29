@@ -27,7 +27,7 @@ to:
 ```
 If done correctly you should see an LLM Translation section in the hachimi GUI  
 ![Hachimi-Edge GUI](image.png)  
-> By default the LM Translation feature is on, but you can turn it off from the GUI.
+> By default the LLM Translation feature is on, but you can turn it off from the GUI.
 
 ### Plugin Config & Behaviour
 The plugins settings are created and saved at `hachimi/llm_plugin_config.json`  
