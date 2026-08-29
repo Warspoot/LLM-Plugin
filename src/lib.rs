@@ -1,5 +1,6 @@
 mod api;
 mod hooks;
+mod il2cpp;
 mod logging;
 mod story;
 
@@ -44,7 +45,7 @@ fn maybe_install_hooks() {
 
 unsafe extern "C" fn on_present(_swap_chain: *mut c_void, _userdata: *mut c_void) {
     maybe_install_hooks();
-    story::poll();
+    hooks::poll();
 }
 
 unsafe extern "C" fn on_game_initialized(_userdata: *mut c_void) {
