@@ -55,3 +55,14 @@ I would also recommend changing the prompts to something else if your model seem
 Any translations made by this plugin are found at `hachimi/localized_data/assets/llm_cache/` in unity name format (i was too lazy to reimplement hachimi's method)  
 
 Currently incompatible with endpoints that use api keys because i am a lazy bum to include the api key in the request
+
+### Dictionary
+An example dictionary can be found in the source code    
+Dictionary should be placed as `hachimi/dictionary.json`  
+The dictionary function searches the extracted text for key phrases present in hachimi/dictionary.json and if present, sends the phrase as a glossary appended to the system prompt.  
+It uses the following format
+```json
+{
+    "jp_text" : "en_text"
+}
+```
