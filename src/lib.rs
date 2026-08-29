@@ -1,6 +1,7 @@
 mod api;
 mod cache;
 mod config;
+mod dictionary;
 mod gui;
 mod hooks;
 mod il2cpp;

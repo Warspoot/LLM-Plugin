@@ -39,6 +39,13 @@ fn request(text: &str, system_prompt: &str) -> Option<String> {
         return None;
     }
 
+    let mut full_system_prompt = system_prompt.to_owned();
+    if let Some(glossary) = crate::dictionary::build_glossary(text) {
+        full_system_prompt.push_str("\n\n");
+        full_system_prompt.push_str(&glossary);
+    }
+    let user_content = format!("[Source Text]\n{text}");
+
     let agent = ureq::Agent::new_with_defaults();
 
     let req = ChatRequest {
@@ -46,11 +53,11 @@ fn request(text: &str, system_prompt: &str) -> Option<String> {
         messages: vec![
             ChatMessage {
                 role: "system",
-                content: system_prompt,
+                content: &full_system_prompt,
             },
             ChatMessage {
                 role: "user",
-                content: text,
+                content: &user_content,
             },
         ],
         temperature: cfg.temperature,
