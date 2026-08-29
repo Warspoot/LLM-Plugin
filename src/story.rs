@@ -2,6 +2,7 @@ use std::ffi::CString;
 use std::ffi::c_void;
 use std::sync::OnceLock;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 use crate::api;
@@ -425,7 +426,10 @@ struct PendingBlock {
     field: usize,
     target: TranslationTarget,
     text: String,
+    generation: usize,
 }
+
+static GENERATION: AtomicUsize = AtomicUsize::new(0);
 
 /// Names get a different, dedicated prompt (see llm::translate_name) - a general dialogue prompt
 fn translate_pending(target: &TranslationTarget, text: &str) -> Option<String> {
@@ -440,6 +444,8 @@ pub fn process(timeline_data: *mut api::Il2CppObject) {
     if !crate::config::get().enabled {
         return;
     }
+
+    let generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
 
     let title = read_title(timeline_data);
     let story_name = read_object_name(timeline_data);
@@ -506,6 +512,7 @@ pub fn process(timeline_data: *mut api::Il2CppObject) {
                 field: name_field() as usize,
                 target: TranslationTarget::Name,
                 text: name,
+                generation,
             });
             None
         } else {
@@ -549,6 +556,7 @@ pub fn process(timeline_data: *mut api::Il2CppObject) {
                     field: choice_text_field() as usize,
                     target: TranslationTarget::Choice(j as usize),
                     text: choice_text.clone(),
+                    generation,
                 });
             }
             choice_texts.push(choice_text);
@@ -563,6 +571,7 @@ pub fn process(timeline_data: *mut api::Il2CppObject) {
                 field: text_field() as usize,
                 target: TranslationTarget::Text,
                 text,
+                generation,
             });
         } else {
             block_dicts.push(cache::BlockDict { name: name_dict_value, text: Some(text), choice_data_list: choice_texts, ..Default::default() });
@@ -612,6 +621,12 @@ pub fn process(timeline_data: *mut api::Il2CppObject) {
                     TranslationTarget::Name => translated,
                     _ => wrap_text(&translated, 45),
                 };
+
+                if block.generation != GENERATION.load(Ordering::Relaxed) {
+                    crate::logging::warn(&format!("story::process: dropping stale translation from a superseded story: {wrapped:?}"));
+                    continue;
+                }
+
                 crate::logging::info(&format!("story::process: translated = {wrapped:?}"));
 
                 PENDING_WRITES.lock().unwrap().push(PendingWrite { obj: block.obj, field: block.field, text: wrapped.clone() });
