@@ -36,7 +36,7 @@ fn maybe_install_hooks() {
         return;
     }
     if elapsed < READY_TIMEOUT_MS && hooks::ready_class().is_null() {
-        return; // not ready yet - try again next frame
+        return; // nothing, try again next frame
     }
     logging::info(&format!("maybe_install_hooks: proceeding after {elapsed}ms"));
     install_hooks_once();
@@ -44,6 +44,7 @@ fn maybe_install_hooks() {
 
 unsafe extern "C" fn on_present(_swap_chain: *mut c_void, _userdata: *mut c_void) {
     maybe_install_hooks();
+    story::poll();
 }
 
 unsafe extern "C" fn on_game_initialized(_userdata: *mut c_void) {
