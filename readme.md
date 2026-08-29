@@ -2,7 +2,7 @@
 An LLM-based auto-translation plugin for Hachimi-Edge for JP Honse Game
 
 ## Acknowledgements
-This plugin practically reimplements the Auto Translate feature in hachimi, targetting LLMs instead of Sugoi offline  
+This plugin practically reimplements the Auto Translate feature in hachimi, targeting LLMs instead of Sugoi offline  
 Also reimplements the synchronous thread blocking behaviour during translation present in Hachimi-Edge versions prior to V0.26.0  
 This is primarily due to the new behaviour being prone to crashes  
 > This plugin requires a hachimi version with API v3 (basically latest and you'll be fine)
