@@ -241,6 +241,16 @@ pub fn read_title(timeline_data: *mut api::Il2CppObject) -> String {
     unsafe { read_il2cpp_string(title_ptr) }
 }
 
+// check if text is translated
+pub fn needs_translation(text: &str) -> bool {
+    text.chars().any(|c| {
+        let code = c as u32;
+        (0x3040..=0x309F).contains(&code)   // Hiragana
+            || (0x30A0..=0x30FF).contains(&code) // Katakana
+            || (0x4E00..=0x9FFF).contains(&code) // Kanji
+    })
+}
+
 /// read title and text
 pub fn process(timeline_data: *mut api::Il2CppObject) {
     let title = read_title(timeline_data);
@@ -287,6 +297,7 @@ pub fn process(timeline_data: *mut api::Il2CppObject) {
         }
 
         let text = unsafe { read_il2cpp_string(text_ptr) };
-        crate::logging::info(&format!("story::process: block {i} text = {text:?}"));
+        let needs_tl = needs_translation(&text);
+        crate::logging::info(&format!("story::process: block {i} text = {text:?} (needs_translation={needs_tl})"));
     }
 }
