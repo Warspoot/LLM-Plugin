@@ -1,4 +1,5 @@
 mod api;
+mod cache;
 mod hooks;
 mod il2cpp;
 mod logging;

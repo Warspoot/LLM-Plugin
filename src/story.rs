@@ -7,6 +7,7 @@ use std::thread;
 use crate::api;
 use crate::api::Il2CppClass;
 use crate::api::FieldInfo;
+use crate::cache;
 use crate::il2cpp::{list_len, list_ref_at, read_il2cpp_string};
 use crate::llm;
 
@@ -244,6 +245,49 @@ pub fn read_title(timeline_data: *mut api::Il2CppObject) -> String {
     unsafe { read_il2cpp_string(title_ptr) }
 }
 
+pub fn unity_object_class() -> *mut Il2CppClass {
+    static CLASS: OnceLock<usize> = OnceLock::new();
+    let addr = *CLASS.get_or_init(|| {
+        let Ok(assembly) = CString::new("UnityEngine.CoreModule.dll") else {return 0};
+        let Ok(namespace) = CString::new("UnityEngine") else {return 0};
+        let Ok(name) = CString::new("Object") else {return 0};
+        let image = unsafe { (api::il2cpp_get_assembly_image())(assembly.as_ptr()) };
+        if image.is_null() {
+            return 0
+        }
+        unsafe { (api::il2cpp_get_class())(image, namespace.as_ptr(), name.as_ptr()) as usize }
+    });
+    addr as *mut Il2CppClass
+}
+
+pub fn object_get_name_addr() -> *mut c_void {
+    static METHOD: OnceLock<usize> = OnceLock::new();
+    let addr = *METHOD.get_or_init(|| {
+        let class = unity_object_class();
+        if class.is_null() {
+            return 0
+        }
+        let Ok(name) = CString::new("get_name") else {return 0};
+        unsafe { (api::il2cpp_get_method_addr())(class, name.as_ptr(), 0) as usize}
+    });
+    addr as *mut c_void
+}
+
+type ObjectGetNameFn = unsafe extern "C" fn(this: *mut api::Il2CppObject) -> *mut api::Il2CppString;
+
+/// The story object's own Unity `.name` (e.g. "storytimeline_02001011") - used as the cache
+/// filename since we have no way to recover the asset bundle's full path (see cache.rs).
+pub fn read_object_name(obj: *mut api::Il2CppObject) -> String {
+    let addr = object_get_name_addr();
+    if addr.is_null() {
+        return String::new();
+    }
+    unsafe {
+        let f: ObjectGetNameFn = std::mem::transmute(addr);
+        read_il2cpp_string(f(obj))
+    }
+}
+
 // translation qol
 pub fn needs_translation(text: &str) -> bool {
     text.chars().any(|c| {
@@ -270,8 +314,7 @@ pub fn wrap_text(text: &str, line_width: usize) -> String {
     if !current_line.is_empty() {
         lines.push(current_line);
     }
-
-    lines.join("\n")
+    lines.join(" \n")
 }
 
 struct PendingWrite {
@@ -305,10 +348,34 @@ unsafe extern "C" fn apply_pending_writes() {
     }
 }
 
-/// read title and text
+// translation cache logic
+struct CurrentDict {
+    story_name: String,
+    dict: cache::Dict,
+}
+
+static CURRENT_DICT: Mutex<Option<CurrentDict>> = Mutex::new(None);
+
+fn update_and_save_dict(index: usize, translated: &str) {
+    let mut guard = CURRENT_DICT.lock().unwrap();
+    let Some(current) = guard.as_mut() else { return };
+    if let Some(block) = current.dict.text_block_list.get_mut(index) {
+        block.text = Some(translated.to_owned());
+    }
+    cache::save_dict(&current.story_name, &current.dict);
+}
+
+struct PendingBlock {
+    index: usize,
+    clip: usize,
+    text: String,
+}
+
+// read title and text & translates it
 pub fn process(timeline_data: *mut api::Il2CppObject) {
     let title = read_title(timeline_data);
-    crate::logging::info(&format!("story::process: Title = {title:?}"));
+    let story_name = read_object_name(timeline_data);
+    crate::logging::info(&format!("story::process: Title = {title:?}, name = {story_name:?}"));
 
     let mut block_list_ptr: *mut c_void = std::ptr::null_mut();
     unsafe {
@@ -321,11 +388,13 @@ pub fn process(timeline_data: *mut api::Il2CppObject) {
     let count = unsafe { list_len(block_list_ptr) };
     crate::logging::info(&format!("story::process: BlockList has {count} blocks"));
 
-    let mut pending: Vec<(usize, String)> = Vec::new();
+    let mut pending: Vec<PendingBlock> = Vec::new();
+    let mut block_dicts: Vec<cache::BlockDict> = Vec::new();
 
     for i in 0..count {
         let block = unsafe { list_ref_at(block_list_ptr, i) };
         if block.is_null() {
+            block_dicts.push(cache::BlockDict::default());
             continue;
         }
 
@@ -334,6 +403,7 @@ pub fn process(timeline_data: *mut api::Il2CppObject) {
             (api::il2cpp_get_field_value())(block as *mut api::Il2CppObject, text_track_field(), &mut text_track as *mut _ as *mut c_void);
         }
         if text_track.is_null() {
+            block_dicts.push(cache::BlockDict::default());
             continue; // block has no dialogue
         }
 
@@ -344,6 +414,7 @@ pub fn process(timeline_data: *mut api::Il2CppObject) {
 
         let clip = unsafe { list_ref_at(clip_list_ptr, 0) };
         if clip.is_null() {
+            block_dicts.push(cache::BlockDict::default());
             continue;
         }
 
@@ -355,8 +426,28 @@ pub fn process(timeline_data: *mut api::Il2CppObject) {
         let text = unsafe { read_il2cpp_string(text_ptr) };
         let needs_tl = needs_translation(&text);
         crate::logging::info(&format!("story::process: block {i} text = {text:?} (needs_translation={needs_tl})"));
+
         if needs_tl {
-            pending.push((clip as usize, text));
+            // text: None until translated - update_and_save_dict fills this in later
+            block_dicts.push(cache::BlockDict::default());
+            pending.push(PendingBlock { index: i as usize, clip: clip as usize, text });
+        } else {
+            block_dicts.push(cache::BlockDict { text: Some(text), ..Default::default() });
+        }
+    }
+
+    {
+        let mut guard = CURRENT_DICT.lock().unwrap();
+        *guard = Some(CurrentDict {
+            story_name,
+            dict: cache::Dict {
+                title: if title.is_empty() { None } else { Some(title) },
+                text_block_list: block_dicts,
+                no_wrap: false,
+            },
+        });
+        if let Some(current) = guard.as_ref() {
+            cache::save_dict(&current.story_name, &current.dict);
         }
     }
 
@@ -365,11 +456,12 @@ pub fn process(timeline_data: *mut api::Il2CppObject) {
     }
 
     // attempt to prevent a race condition with the first tranlsated text
-    let (first_clip, first_text) = pending.remove(0);
-    if let Some(translated) = llm::translate(&first_text) {
+    let first = pending.remove(0);
+    if let Some(translated) = llm::translate(&first.text) {
         let wrapped = wrap_text(&translated, 21);
         crate::logging::info(&format!("story::process: first block translated = {wrapped:?}"));
-        write_translated_text(first_clip as *mut api::Il2CppObject, &wrapped);
+        write_translated_text(first.clip as *mut api::Il2CppObject, &wrapped);
+        update_and_save_dict(first.index, &wrapped);
     }
 
     if pending.is_empty() {
@@ -377,12 +469,13 @@ pub fn process(timeline_data: *mut api::Il2CppObject) {
     }
 
     thread::spawn(move || {
-        for (clip_addr, text) in pending {
-            if let Some(translated) = llm::translate(&text) {
+        for block in pending {
+            if let Some(translated) = llm::translate(&block.text) {
                 let wrapped = wrap_text(&translated, 45);
                 crate::logging::info(&format!("story::process: translated = {wrapped:?}"));
 
-                PENDING_WRITES.lock().unwrap().push(PendingWrite { clip: clip_addr, text: wrapped });
+                PENDING_WRITES.lock().unwrap().push(PendingWrite { clip: block.clip, text: wrapped.clone() });
+                update_and_save_dict(block.index, &wrapped);
 
                 unsafe {
                     (api::il2cpp_schedule_on_thread())(main_thread(), apply_pending_writes);
