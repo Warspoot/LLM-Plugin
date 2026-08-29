@@ -13,8 +13,8 @@ This is primarily due to the new behaviour being prone to crashes
 
 ## Usage/Installation
 Requires Hachimi-Edge to be installed  
-Download the latest `llm_plugin.dll` from releases  
-Place the plugin inside the hachimi folder  
+Download the latest `llm_plugin.dll` from [releases](https://github.com/Warspoot/LLM-Plugin/releases/latest)  
+Navigate to game install and place the plugin inside the `hachimi` folder  
 in `hachimi/config.json` edit the following line:
 ```json
   "load_libraries": [],
@@ -48,4 +48,6 @@ The default parameters for the plugin are:
 Most of these settings are self explanatory, with the two main ones being `endpoint` and `model`. Set them up accordingly to your LM Studio/OpenAI compatible setup.  
 > `endpoint` requires the full url with `v1/chat/completions` placed at the end of the url.
 
-I would also recommend changing the prompts to something else if your model seems to struggle or generates useless jargon.
+I would also recommend changing the prompts to something else if your model seems to struggle or generates useless jargon.  
+
+Any translations made by this plugin are found at `hachimi/localized_data/assets/llm_cache/` in unity name format (i was too lazy to reimplement hachimi's method)
