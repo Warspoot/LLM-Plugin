@@ -1,5 +1,7 @@
 mod api;
 mod cache;
+mod config;
+mod gui;
 mod hooks;
 mod il2cpp;
 mod logging;
@@ -80,6 +82,12 @@ pub extern "C" fn hachimi_init_v3(get_api: api::HachimiGetApiFn, version: i32) -
     if !registered_present && !registered_init {
         logging::error("both hook-trigger registrations failed - plugin cannot install hooks");
         return InitResult::Error;
+    }
+
+    // gui shiiii
+    let gui_result = std::panic::catch_unwind(gui::register);
+    if gui_result.is_err() {
+        logging::error("gui::register PANICKED (caught) - settings panel will not be available this session");
     }
 
     InitResult::Ok

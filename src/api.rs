@@ -26,6 +26,8 @@ pub enum InitResult {
 
 pub type GameInitializedCallback = unsafe extern "C" fn(userdata: *mut c_void);
 pub type PresentCallback = unsafe extern "C" fn(swap_chain: *mut c_void, userdata: *mut c_void);
+pub type GuiMenuSectionCallback = extern "C" fn(ui: *mut c_void, userdata: *mut c_void);
+pub type GuiWindowCallback = extern "C" fn(ui: *mut c_void, userdata: *mut c_void);
 
 static GET_API: OnceLock<HachimiGetApiFn> = OnceLock::new();
 
@@ -81,7 +83,20 @@ api_fn!(hachimi_register_present_callback, "hachimi_register_present_callback", 
 api_fn!(hachimi_get_base_dir, "hachimi_get_base_dir", unsafe extern "C" fn() -> *const c_char);
 api_fn!(hachimi_get_data_path, "hachimi_get_data_path", unsafe extern "C" fn() -> *const c_char);
 
-/// hachimi logging
+api_fn!(gui_register_menu_section, "gui_register_menu_section", unsafe extern "C" fn(Option<GuiMenuSectionCallback>, *mut c_void) -> bool);
+api_fn!(gui_ui_heading, "gui_ui_heading", unsafe extern "C" fn(*mut c_void, *const c_char) -> bool);
+api_fn!(gui_ui_label, "gui_ui_label", unsafe extern "C" fn(*mut c_void, *const c_char) -> bool);
+api_fn!(gui_ui_separator, "gui_ui_separator", unsafe extern "C" fn(*mut c_void) -> bool);
+api_fn!(gui_ui_checkbox, "gui_ui_checkbox", unsafe extern "C" fn(*mut c_void, *const c_char, *mut bool) -> bool);
+api_fn!(gui_ui_text_edit_singleline, "gui_ui_text_edit_singleline", unsafe extern "C" fn(*mut c_void, *mut c_char, usize) -> bool);
+api_fn!(gui_show_notification, "gui_show_notification", unsafe extern "C" fn(*const c_char) -> bool);
+api_fn!(gui_ui_button, "gui_ui_button", unsafe extern "C" fn(*mut c_void, *const c_char) -> bool);
+api_fn!(gui_ui_small_button, "gui_ui_small_button", unsafe extern "C" fn(*mut c_void, *const c_char) -> bool);
+api_fn!(gui_new_window_id, "gui_new_window_id", unsafe extern "C" fn() -> i32);
+api_fn!(gui_show_window, "gui_show_window", unsafe extern "C" fn(i32, *const c_char, Option<GuiWindowCallback>, Option<GuiWindowCallback>, *mut c_void) -> bool);
+api_fn!(gui_close_window, "gui_close_window", unsafe extern "C" fn(i32));
+
+// hachimi logging
 pub fn log(level: log::Level, message: &str) {
     let lvl: c_int = match level {
         log::Level::Error => 1,

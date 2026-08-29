@@ -427,6 +427,10 @@ struct PendingBlock {
 
 // read title and text & translates it
 pub fn process(timeline_data: *mut api::Il2CppObject) {
+    if !crate::config::get().enabled {
+        return;
+    }
+
     let title = read_title(timeline_data);
     let story_name = read_object_name(timeline_data);
     crate::logging::info(&format!("story::process: Title = {title:?}, name = {story_name:?}"));
