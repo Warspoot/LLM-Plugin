@@ -14,7 +14,7 @@ Requires a hachimi version with API v3 (basically latest and you'll be fine)
 
 ## Usage/Installation
 Requires Hachimi-Edge to be installed  
-Most importantly LM Studio
+Most importantly LM Studio  
 Download the latest `llm_plugin.dll` from [releases](https://github.com/Warspoot/LLM-Plugin/releases/latest)  
 Navigate to game install and place the plugin inside the `hachimi` folder  
 in `hachimi/config.json` edit the following line:
