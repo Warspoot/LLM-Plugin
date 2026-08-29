@@ -1,9 +1,6 @@
 use std::ffi::CString;
 use std::ffi::c_void;
 use std::sync::OnceLock;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::thread;
 
 use crate::api;
 use crate::api::Il2CppClass;
@@ -356,20 +353,6 @@ pub fn wrap_text(text: &str, line_width: usize) -> String {
     lines.join(" \n")
 }
 
-struct PendingWrite {
-    obj: usize,
-    field: usize,
-    text: String,
-}
-
-static PENDING_WRITES: Mutex<Vec<PendingWrite>> = Mutex::new(Vec::new());
-static MAIN_THREAD: OnceLock<usize> = OnceLock::new();
-
-fn main_thread() -> *mut api::Il2CppThread {
-    let addr = *MAIN_THREAD.get_or_init(|| unsafe { (api::il2cpp_get_main_thread())() as usize });
-    addr as *mut api::Il2CppThread
-}
-
 fn write_translated_text(obj: *mut api::Il2CppObject, field: *mut FieldInfo, text: &str) {
     let Ok(c_text) = CString::new(text) else { return };
     let new_str = unsafe { (api::il2cpp_string_new())(c_text.as_ptr()) };
@@ -381,71 +364,15 @@ fn write_translated_text(obj: *mut api::Il2CppObject, field: *mut FieldInfo, tex
     }
 }
 
-unsafe extern "C" fn apply_pending_writes() {
-    let mut pending = PENDING_WRITES.lock().unwrap();
-    for write in pending.drain(..) {
-        write_translated_text(write.obj as *mut api::Il2CppObject, write.field as *mut FieldInfo, &write.text);
-    }
-}
-
-// translation cache logic
-struct CurrentDict {
-    story_name: String,
-    dict: cache::Dict,
-}
-
-static CURRENT_DICT: Mutex<Option<CurrentDict>> = Mutex::new(None);
-
-// choice option (by its index within that block's ChoiceDataList).
-enum TranslationTarget {
-    Text,
-    Name,
-    Choice(usize),
-}
-
-fn update_and_save_dict(index: usize, target: &TranslationTarget, translated: &str) {
-    let mut guard = CURRENT_DICT.lock().unwrap();
-    let Some(current) = guard.as_mut() else { return };
-    if let Some(block) = current.dict.text_block_list.get_mut(index) {
-        match target {
-            TranslationTarget::Text => block.text = Some(translated.to_owned()),
-            TranslationTarget::Name => block.name = Some(translated.to_owned()),
-            TranslationTarget::Choice(choice_index) => {
-                if let Some(slot) = block.choice_data_list.get_mut(*choice_index) {
-                    *slot = translated.to_owned();
-                }
-            }
-        }
-    }
-    cache::save_dict(&current.story_name, &current.dict);
-}
-
-struct PendingBlock {
-    index: usize,
-    obj: usize,
-    field: usize,
-    target: TranslationTarget,
-    text: String,
-    generation: usize,
-}
-
-static GENERATION: AtomicUsize = AtomicUsize::new(0);
-
-/// Names get a different, dedicated prompt (see llm::translate_name) - a general dialogue prompt
-fn translate_pending(target: &TranslationTarget, text: &str) -> Option<String> {
-    match target {
-        TranslationTarget::Name => llm::translate_name(text),
-        _ => llm::translate(text),
-    }
-}
-
-// read title and text & translates it
+// read title and text, translates it, and writes each result back before moving on to the next
+// block - fully synchronous/blocking. This freezes the render thread for the duration, but
+// avoids the entire class of races that came with translating on a background thread (a story
+// being abandoned or superseded mid-translation, writing into a block that's already on screen,
+// etc.) since nothing else can run while we're blocked.
 pub fn process(timeline_data: *mut api::Il2CppObject) {
     if !crate::config::get().enabled {
         return;
     }
-
-    let generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
 
     let title = read_title(timeline_data);
     let story_name = read_object_name(timeline_data);
@@ -462,7 +389,6 @@ pub fn process(timeline_data: *mut api::Il2CppObject) {
     let count = unsafe { list_len(block_list_ptr) };
     crate::logging::info(&format!("story::process: BlockList has {count} blocks"));
 
-    let mut pending: Vec<PendingBlock> = Vec::new();
     let mut block_dicts: Vec<cache::BlockDict> = Vec::new();
 
     for i in 0..count {
@@ -505,16 +431,13 @@ pub fn process(timeline_data: *mut api::Il2CppObject) {
         } else if name == "<username>" || name.is_empty() {
             None
         } else if needs_translation(&name) {
-            crate::logging::info(&format!("story::process: block {i} name = {name:?} (needs_translation=true)"));
-            pending.push(PendingBlock {
-                index: i as usize,
-                obj: clip as usize,
-                field: name_field() as usize,
-                target: TranslationTarget::Name,
-                text: name,
-                generation,
-            });
-            None
+            if let Some(translated) = llm::translate_name(&name) {
+                crate::logging::info(&format!("story::process: block {i} name translated = {translated:?}"));
+                write_translated_text(clip as *mut api::Il2CppObject, name_field(), &translated);
+                Some(translated)
+            } else {
+                None
+            }
         } else {
             Some(name)
         };
@@ -550,92 +473,35 @@ pub fn process(timeline_data: *mut api::Il2CppObject) {
             crate::logging::info(&format!("story::process: block {i} choice {j} text = {choice_text:?} (needs_translation={choice_needs_tl})"));
 
             if choice_needs_tl {
-                pending.push(PendingBlock {
-                    index: i as usize,
-                    obj: choice_obj as usize,
-                    field: choice_text_field() as usize,
-                    target: TranslationTarget::Choice(j as usize),
-                    text: choice_text.clone(),
-                    generation,
-                });
+                if let Some(translated) = llm::translate(&choice_text) {
+                    let wrapped = wrap_text(&translated, 45);
+                    crate::logging::info(&format!("story::process: block {i} choice {j} translated = {wrapped:?}"));
+                    write_translated_text(choice_obj as *mut api::Il2CppObject, choice_text_field(), &wrapped);
+                    choice_texts.push(wrapped);
+                    continue;
+                }
             }
             choice_texts.push(choice_text);
         }
 
         if needs_tl {
-            // text: none until translated, update_and_save_dict fills this in later
-            block_dicts.push(cache::BlockDict { name: name_dict_value, choice_data_list: choice_texts, ..Default::default() });
-            pending.push(PendingBlock {
-                index: i as usize,
-                obj: clip as usize,
-                field: text_field() as usize,
-                target: TranslationTarget::Text,
-                text,
-                generation,
-            });
+            if let Some(translated) = llm::translate(&text) {
+                let wrapped = wrap_text(&translated, 45);
+                crate::logging::info(&format!("story::process: block {i} translated = {wrapped:?}"));
+                write_translated_text(clip as *mut api::Il2CppObject, text_field(), &wrapped);
+                block_dicts.push(cache::BlockDict { name: name_dict_value, text: Some(wrapped), choice_data_list: choice_texts, ..Default::default() });
+            } else {
+                block_dicts.push(cache::BlockDict { name: name_dict_value, choice_data_list: choice_texts, ..Default::default() });
+            }
         } else {
             block_dicts.push(cache::BlockDict { name: name_dict_value, text: Some(text), choice_data_list: choice_texts, ..Default::default() });
         }
     }
 
-    {
-        let mut guard = CURRENT_DICT.lock().unwrap();
-        *guard = Some(CurrentDict {
-            story_name,
-            dict: cache::Dict {
-                title: if title.is_empty() { None } else { Some(title) },
-                text_block_list: block_dicts,
-                no_wrap: false,
-            },
-        });
-        if let Some(current) = guard.as_ref() {
-            cache::save_dict(&current.story_name, &current.dict);
-        }
-    }
-
-    if pending.is_empty() {
-        return;
-    }
-
-    // attempt to prevent a race condition with the first tranlsated text
-    let first = pending.remove(0);
-    if let Some(translated) = translate_pending(&first.target, &first.text) {
-        // names are short, single values therefore dont need any wrapping
-        let wrapped = match first.target {
-            TranslationTarget::Name => translated,
-            _ => wrap_text(&translated, 21),
-        };
-        crate::logging::info(&format!("story::process: first block translated = {wrapped:?}"));
-        write_translated_text(first.obj as *mut api::Il2CppObject, first.field as *mut FieldInfo, &wrapped);
-        update_and_save_dict(first.index, &first.target, &wrapped);
-    }
-
-    if pending.is_empty() {
-        return;
-    }
-
-    thread::spawn(move || {
-        for block in pending {
-            if let Some(translated) = translate_pending(&block.target, &block.text) {
-                let wrapped = match block.target {
-                    TranslationTarget::Name => translated,
-                    _ => wrap_text(&translated, 45),
-                };
-
-                if block.generation != GENERATION.load(Ordering::Relaxed) {
-                    crate::logging::warn(&format!("story::process: dropping stale translation from a superseded story: {wrapped:?}"));
-                    continue;
-                }
-
-                crate::logging::info(&format!("story::process: translated = {wrapped:?}"));
-
-                PENDING_WRITES.lock().unwrap().push(PendingWrite { obj: block.obj, field: block.field, text: wrapped.clone() });
-                update_and_save_dict(block.index, &block.target, &wrapped);
-
-                unsafe {
-                    (api::il2cpp_schedule_on_thread())(main_thread(), apply_pending_writes);
-                }
-            }
-        }
-    });
+    let dict = cache::Dict {
+        title: if title.is_empty() { None } else { Some(title) },
+        text_block_list: block_dicts,
+        no_wrap: false,
+    };
+    cache::save_dict(&story_name, &dict);
 }
