@@ -398,6 +398,7 @@ static CURRENT_DICT: Mutex<Option<CurrentDict>> = Mutex::new(None);
 // choice option (by its index within that block's ChoiceDataList).
 enum TranslationTarget {
     Text,
+    Name,
     Choice(usize),
 }
 
@@ -407,6 +408,7 @@ fn update_and_save_dict(index: usize, target: &TranslationTarget, translated: &s
     if let Some(block) = current.dict.text_block_list.get_mut(index) {
         match target {
             TranslationTarget::Text => block.text = Some(translated.to_owned()),
+            TranslationTarget::Name => block.name = Some(translated.to_owned()),
             TranslationTarget::Choice(choice_index) => {
                 if let Some(slot) = block.choice_data_list.get_mut(*choice_index) {
                     *slot = translated.to_owned();
@@ -423,6 +425,14 @@ struct PendingBlock {
     field: usize,
     target: TranslationTarget,
     text: String,
+}
+
+/// Names get a different, dedicated prompt (see llm::translate_name) - a general dialogue prompt
+fn translate_pending(target: &TranslationTarget, text: &str) -> Option<String> {
+    match target {
+        TranslationTarget::Name => llm::translate_name(text),
+        _ => llm::translate(text),
+    }
 }
 
 // read title and text & translates it
@@ -476,6 +486,32 @@ pub fn process(timeline_data: *mut api::Il2CppObject) {
             continue;
         }
 
+        // "モノローグ" ("Monologue") and "<username>" are sentinels, not real speaker names
+        let mut name_ptr: *mut api::Il2CppString = std::ptr::null_mut();
+        unsafe {
+            (api::il2cpp_get_field_value())(clip as *mut api::Il2CppObject, name_field(), &mut name_ptr as *mut _ as *mut c_void);
+        }
+        let name = unsafe { read_il2cpp_string(name_ptr) };
+        let name_dict_value: Option<String> = if name == "モノローグ" {
+            crate::logging::info(&format!("story::process: block {i} name = {name:?} -> blanking monologue label"));
+            write_translated_text(clip as *mut api::Il2CppObject, name_field(), "");
+            Some(String::new())
+        } else if name == "<username>" || name.is_empty() {
+            None
+        } else if needs_translation(&name) {
+            crate::logging::info(&format!("story::process: block {i} name = {name:?} (needs_translation=true)"));
+            pending.push(PendingBlock {
+                index: i as usize,
+                obj: clip as usize,
+                field: name_field() as usize,
+                target: TranslationTarget::Name,
+                text: name,
+            });
+            None
+        } else {
+            Some(name)
+        };
+
         let mut text_ptr: *mut api::Il2CppString = std::ptr::null_mut();
         unsafe {
             (api::il2cpp_get_field_value())(clip as *mut api::Il2CppObject, text_field(), &mut text_ptr as *mut _ as *mut c_void);
@@ -520,7 +556,7 @@ pub fn process(timeline_data: *mut api::Il2CppObject) {
 
         if needs_tl {
             // text: none until translated, update_and_save_dict fills this in later
-            block_dicts.push(cache::BlockDict { choice_data_list: choice_texts, ..Default::default() });
+            block_dicts.push(cache::BlockDict { name: name_dict_value, choice_data_list: choice_texts, ..Default::default() });
             pending.push(PendingBlock {
                 index: i as usize,
                 obj: clip as usize,
@@ -529,7 +565,7 @@ pub fn process(timeline_data: *mut api::Il2CppObject) {
                 text,
             });
         } else {
-            block_dicts.push(cache::BlockDict { text: Some(text), choice_data_list: choice_texts, ..Default::default() });
+            block_dicts.push(cache::BlockDict { name: name_dict_value, text: Some(text), choice_data_list: choice_texts, ..Default::default() });
         }
     }
 
@@ -554,8 +590,12 @@ pub fn process(timeline_data: *mut api::Il2CppObject) {
 
     // attempt to prevent a race condition with the first tranlsated text
     let first = pending.remove(0);
-    if let Some(translated) = llm::translate(&first.text) {
-        let wrapped = wrap_text(&translated, 21);
+    if let Some(translated) = translate_pending(&first.target, &first.text) {
+        // names are short, single values therefore dont need any wrapping
+        let wrapped = match first.target {
+            TranslationTarget::Name => translated,
+            _ => wrap_text(&translated, 21),
+        };
         crate::logging::info(&format!("story::process: first block translated = {wrapped:?}"));
         write_translated_text(first.obj as *mut api::Il2CppObject, first.field as *mut FieldInfo, &wrapped);
         update_and_save_dict(first.index, &first.target, &wrapped);
@@ -567,8 +607,11 @@ pub fn process(timeline_data: *mut api::Il2CppObject) {
 
     thread::spawn(move || {
         for block in pending {
-            if let Some(translated) = llm::translate(&block.text) {
-                let wrapped = wrap_text(&translated, 45);
+            if let Some(translated) = translate_pending(&block.target, &block.text) {
+                let wrapped = match block.target {
+                    TranslationTarget::Name => translated,
+                    _ => wrap_text(&translated, 45),
+                };
                 crate::logging::info(&format!("story::process: translated = {wrapped:?}"));
 
                 PENDING_WRITES.lock().unwrap().push(PendingWrite { obj: block.obj, field: block.field, text: wrapped.clone() });

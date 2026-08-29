@@ -14,6 +14,7 @@ pub struct Config {
     pub endpoint: String,
     pub model: String,
     pub system_prompt: String,
+    pub name_prompt: String,
     pub temperature: f32,
     pub top_k: i32,
     pub min_p: f32,
@@ -26,8 +27,11 @@ impl Default for Config {
             enabled: true,
             endpoint: "http://127.0.0.1:1234/v1/chat/completions".to_owned(),
             model: "local-model".to_owned(),
-            system_prompt: "Translate the following Japanese video game dialogue into natural \
+            system_prompt: "Translate the following Japanese dialogue into natural \
                 English. Reply with only the translation, no notes or explanation.".to_owned(),
+            name_prompt: "This is a character's name from a Japanese video game, often a real \
+                racehorse's name written in katakana. Respond with only its standard English \
+                transliteration - no notes, no punctuation, no quotation marks.".to_owned(),
             temperature: 0.3,
             top_k: 40,
             min_p: 0.05,
@@ -62,8 +66,10 @@ fn load() -> Config {
             }
         },
         Err(_) => {
-            crate::logging::info(&format!("config::load: no config file at {}, using defaults", path.display()));
-            Config::default()
+            crate::logging::info(&format!("config::load: no config file at {}, writing defaults", path.display()));
+            let defaults = Config::default();
+            save(&defaults);
+            defaults
         }
     }
 }

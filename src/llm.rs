@@ -33,7 +33,7 @@ struct ChatResponseMessage {
     content: String,
 }
 
-pub fn translate(text: &str) -> Option<String> {
+fn request(text: &str, system_prompt: &str) -> Option<String> {
     let cfg = config::get();
     if !cfg.enabled {
         return None;
@@ -41,12 +41,12 @@ pub fn translate(text: &str) -> Option<String> {
 
     let agent = ureq::Agent::new_with_defaults();
 
-    let request = ChatRequest {
+    let req = ChatRequest {
         model: &cfg.model,
         messages: vec![
             ChatMessage {
                 role: "system",
-                content: &cfg.system_prompt,
+                content: system_prompt,
             },
             ChatMessage {
                 role: "user",
@@ -59,10 +59,10 @@ pub fn translate(text: &str) -> Option<String> {
         repeat_penalty: cfg.repetition_penalty,
     };
 
-    let mut response = match agent.post(&cfg.endpoint).header("Content-Type", "application/json").send_json(&request) {
+    let mut response = match agent.post(&cfg.endpoint).header("Content-Type", "application/json").send_json(&req) {
         Ok(r) => r,
         Err(e) => {
-            crate::logging::warn(&format!("llm::translate: request failed: {e}"));
+            crate::logging::warn(&format!("llm::request: request failed: {e}"));
             return None;
         }
     };
@@ -70,7 +70,7 @@ pub fn translate(text: &str) -> Option<String> {
     let body_str = match response.body_mut().read_to_string() {
         Ok(s) => s,
         Err(e) => {
-            crate::logging::warn(&format!("llm::translate: failed to read response body: {e}"));
+            crate::logging::warn(&format!("llm::request: failed to read response body: {e}"));
             return None;
         }
     };
@@ -78,10 +78,20 @@ pub fn translate(text: &str) -> Option<String> {
     let parsed: ChatResponse = match serde_json::from_str(&body_str) {
         Ok(p) => p,
         Err(e) => {
-            crate::logging::warn(&format!("llm::translate: failed to parse response JSON: {e}"));
+            crate::logging::warn(&format!("llm::request: failed to parse response JSON: {e}"));
             return None;
         }
     };
 
     parsed.choices.into_iter().next().map(|c| c.message.content)
+}
+
+pub fn translate(text: &str) -> Option<String> {
+    let system_prompt = config::get().system_prompt;
+    request(text, &system_prompt)
+}
+
+pub fn translate_name(name: &str) -> Option<String> {
+    let name_prompt = config::get().name_prompt;
+    request(name, &name_prompt)
 }

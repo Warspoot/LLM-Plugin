@@ -106,7 +106,7 @@ extern "C" fn section(ui: *mut c_void, _userdata: *mut c_void) {
 
     unsafe {
         (api::gui_ui_separator())(ui);
-        (api::gui_ui_label())(ui, c"Endpoint, model, and system prompt are edited in:".as_ptr());
+        (api::gui_ui_label())(ui, c"Endpoint, model, and prompts are edited in:".as_ptr());
         if let Some(name) = config::path().and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())) {
             if let Ok(name_c) = CString::new(name) {
                 (api::gui_ui_label())(ui, name_c.as_ptr());
