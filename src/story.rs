@@ -430,7 +430,7 @@ pub fn process(timeline_data: *mut api::Il2CppObject) {
             Some(String::new())
         } else if name == "<username>" || name.is_empty() {
             None
-        } else if needs_translation(&name) {
+        } else if needs_translation(&name) || crate::dictionary::is_known(&name) {
             if let Some(translated) = llm::translate_name(&name) {
                 crate::logging::info(&format!("story::process: block {i} name translated = {translated:?}"));
                 write_translated_text(clip as *mut api::Il2CppObject, name_field(), &translated);
@@ -448,7 +448,7 @@ pub fn process(timeline_data: *mut api::Il2CppObject) {
         }
 
         let text = unsafe { read_il2cpp_string(text_ptr) };
-        let needs_tl = needs_translation(&text);
+        let needs_tl = needs_translation(&text) || crate::dictionary::is_known(&text);
         crate::logging::info(&format!("story::process: block {i} text = {text:?} (needs_translation={needs_tl})"));
 
         let mut choice_list_ptr: *mut c_void = std::ptr::null_mut();
@@ -469,7 +469,7 @@ pub fn process(timeline_data: *mut api::Il2CppObject) {
                 (api::il2cpp_get_field_value())(choice_obj as *mut api::Il2CppObject, choice_text_field(), &mut choice_text_ptr as *mut _ as *mut c_void);
             }
             let choice_text = unsafe { read_il2cpp_string(choice_text_ptr) };
-            let choice_needs_tl = needs_translation(&choice_text);
+            let choice_needs_tl = needs_translation(&choice_text) || crate::dictionary::is_known(&choice_text);
             crate::logging::info(&format!("story::process: block {i} choice {j} text = {choice_text:?} (needs_translation={choice_needs_tl})"));
 
             if choice_needs_tl {
